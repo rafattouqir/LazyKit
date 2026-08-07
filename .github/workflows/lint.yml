@@ -1,0 +1,13 @@
+name: Lint
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  swift-format:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check formatting with swift-format
+        run: swift format lint --strict --parallel --recursive Sources Tests Demo

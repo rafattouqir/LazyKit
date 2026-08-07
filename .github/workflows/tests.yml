@@ -1,0 +1,79 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  unit-tests:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run unit tests
+        run: swift test
+
+  ui-tests:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Pick an available iPhone simulator
+        id: simulator
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import subprocess
+
+          devices = json.loads(
+              subprocess.check_output(
+                  ["xcrun", "simctl", "list", "devices", "available", "--json"]
+              )
+          )["devices"]
+
+
+          def runtime_version(runtime):
+              # "com.apple.CoreSimulator.SimRuntime.iOS-26-0" -> (26, 0)
+              suffix = runtime.rsplit("iOS-", 1)[-1]
+              version = []
+              for piece in suffix.split("-"):
+                  if not piece.isdigit():
+                      break
+                  version.append(int(piece))
+              return tuple(version)
+
+
+          runtimes = sorted(
+              (runtime for runtime in devices if runtime_version(runtime)),
+              key=runtime_version,
+              reverse=True,
+          )
+
+          candidates = [
+              device
+              for runtime in runtimes
+              for device in devices[runtime]
+              if device.get("isAvailable", True) and device["name"].startswith("iPhone")
+          ]
+          if not candidates:
+              raise SystemExit("No available iPhone simulator found")
+
+          print(f"udid={candidates[0]['udid']}")
+          print(f"name={candidates[0]['name']}")
+          PY
+      - name: Run UI tests
+        run: |
+          echo "Testing on ${{ steps.simulator.outputs.name }}"
+          xcodebuild test \
+            -project Demo/LazyKitDemo.xcodeproj \
+            -scheme LazyKitDemo \
+            -destination "id=${{ steps.simulator.outputs.udid }}" \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            -resultBundlePath "$RUNNER_TEMP/UITests.xcresult"
+      - name: Upload UI test results
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ui-test-results
+          path: ${{ runner.temp }}/UITests.xcresult
+
