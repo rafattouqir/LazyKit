@@ -1,5 +1,7 @@
 # LazyKit
 
+![Tests](https://github.com/rafattouqir/LazyKit/actions/workflows/tests.yml/badge.svg)
+
 LazyKit is a small collection of SwiftUI components:
 
 - `LazyTextField` is a multi-line input that reserves one line by default,
@@ -188,3 +190,7 @@ xcodebuild -project Demo/LazyKitDemo.xcodeproj \
 
 To run the demo in Xcode, open `Demo/LazyKitDemo.xcodeproj`, select the
 `LazyKitDemo` scheme, and choose an iOS Simulator destination.
+
+## License
+
+LazyKit is available under the MIT license. See `LICENSE` for details.
