@@ -65,9 +65,12 @@ final class LazyKitDemoUITests: XCTestCase {
         field.tap()
         field.typeText(String(repeating: "a", count: 40))
 
-        // The clamp is live: while the field is still focused (keyboard up),
-        // the value must already be capped at 20 characters.
-        XCTAssertEqual((field.value as? String)?.count, 20)
+        // The clamp is applied asynchronously, so poll until it settles
+        // instead of asserting the value on the first read.
+        XCTAssertTrue(
+            waitForFieldCharacterCount(field, 20),
+            "field should clamp to 20 characters, got \(field.value as? String ?? "nil")"
+        )
         attach(screenshot: app.screenshot(), named: "character-limit-20-of-20")
 
         let counter = app.staticTexts[Identifiers.characterCount]
@@ -83,14 +86,35 @@ final class LazyKitDemoUITests: XCTestCase {
         )
 
         field.typeText(String(repeating: "b", count: 40))
-        XCTAssertEqual((field.value as? String)?.count, 20)
+        XCTAssertTrue(
+            waitForFieldCharacterCount(field, 20),
+            "field should stay clamped at 20 characters, got \(field.value as? String ?? "nil")"
+        )
         XCTAssertEqual(counter.label, "20/20")
 
         field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 5))
         field.typeText("xyz")
-        XCTAssertEqual((field.value as? String)?.count, 18)
+        XCTAssertTrue(
+            waitForFieldCharacterCount(field, 18),
+            "field should hold 18 characters after edits, got \(field.value as? String ?? "nil")"
+        )
         XCTAssertEqual(counter.label, "18/20")
         attach(screenshot: app.screenshot(), named: "character-limit-18-of-20")
+    }
+
+    private func waitForFieldCharacterCount(
+        _ field: XCUIElement,
+        _ expected: Int,
+        timeout: TimeInterval = 5
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if (field.value as? String)?.count == expected {
+                return true
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        return (field.value as? String)?.count == expected
     }
 
     func testSlowAsyncButtonShowsLoaderThenReturnsToIdle() throws {
