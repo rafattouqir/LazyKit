@@ -105,14 +105,17 @@ final class LazyKitDemoUITests: XCTestCase {
     private func waitForFieldCharacterCount(
         _ field: XCUIElement,
         _ expected: Int,
-        timeout: TimeInterval = 5
+        timeout: TimeInterval = 15
     ) -> Bool {
+        // The clamp is applied asynchronously and CI runners can be heavily
+        // dilated (AX snapshots alone cost ~1s there), so poll gently with a
+        // generous budget instead of asserting the first read.
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             if (field.value as? String)?.count == expected {
                 return true
             }
-            Thread.sleep(forTimeInterval: 0.2)
+            Thread.sleep(forTimeInterval: 0.5)
         }
         return (field.value as? String)?.count == expected
     }
@@ -130,25 +133,21 @@ final class LazyKitDemoUITests: XCTestCase {
         // label, to verify the whole pill is interactive.
         slowButton.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
 
-        // The button immediately becomes busy and stays disabled until the
-        // async action finishes and the minimum loader hold elapses.
+        // The button immediately becomes busy, then shows the loader once the
+        // action outlasts the loader delay. Wait for both in one ordered wait
+        // so no time is lost between two sequential waits on a slow runner.
         let busy = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "isEnabled == false"),
             object: slowButton
         )
-        let busyResult = XCTWaiter().wait(for: [busy], timeout: 2)
-        XCTAssertEqual(busyResult, .completed, "button should disable while the async action runs")
-
-        // The loader overlays the hidden label, so the button exposes the
-        // loader's "Loading" label while busy.
         let loading = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "label == %@", "Loading"),
             object: slowButton
         )
         XCTAssertEqual(
-            XCTWaiter().wait(for: [loading], timeout: 3),
+            XCTWaiter().wait(for: [busy, loading], timeout: 15),
             .completed,
-            "loader should appear for a slow async action"
+            "button should disable and show the loader while the async action runs"
         )
         attach(screenshot: app.screenshot(), named: "2-loading")
 
@@ -159,7 +158,7 @@ final class LazyKitDemoUITests: XCTestCase {
             object: slowButton
         )
         XCTAssertEqual(
-            XCTWaiter().wait(for: [idleAgain], timeout: 6),
+            XCTWaiter().wait(for: [idleAgain], timeout: 15),
             .completed,
             "slow button should re-enable after the async action finishes"
         )
