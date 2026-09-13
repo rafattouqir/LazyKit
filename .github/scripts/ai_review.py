@@ -20,8 +20,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -133,47 +135,67 @@ def list_gemini_models(api_key: str) -> list[str]:
     ]
 
 
-def pick_model(models: list[str], preferred: str) -> str | None:
-    """Prefer the configured model; else newest non-experimental flash model."""
+PRERELEASE = re.compile(r"preview|exp\d*|experimental|beta|alpha|\brc\b", re.IGNORECASE)
+
+
+def candidate_models(models: list[str], preferred: str) -> list[str]:
+    """Ordered model short-IDs: preferred, then stable flash, then anything else."""
     short = preferred.split("/")[-1]
+    ordered: list[str] = []
     for m in models:
-        if m == preferred or m == f"models/{short}" or m.split("/")[-1] == short:
-            return m.split("/")[-1]
-    flashes = sorted(
-        (m for m in models if "flash" in m.lower() and "exp" not in m.lower()),
+        name = m.split("/")[-1]
+        if m == preferred or m == f"models/{short}" or name == short:
+            ordered.append(name)
+    stable_flash = sorted(
+        {
+            m.split("/")[-1]
+            for m in models
+            if "flash" in m.lower() and not PRERELEASE.search(m)
+        },
         reverse=True,
     )
-    if flashes:
-        return flashes[0].split("/")[-1]
-    if models:
-        return sorted(models, reverse=True)[0].split("/")[-1]
-    return None
+    ordered.extend(n for n in stable_flash if n not in ordered)
+    rest = sorted({m.split("/")[-1] for m in models} - set(ordered), reverse=True)
+    ordered.extend(n for n in rest if "embed" not in n.lower() and "tts" not in n.lower())
+    return ordered[:4]
 
 
 def call_gemini(system: str, user: str, model: str, api_key: str) -> tuple[str, str]:
-    """Returns (review_text, model_used). Retries once via model auto-discovery on 404."""
+    """Returns (review_text, model_used). Tries up to 3 models (404/429 fallthrough)."""
     payload = {
         "system_instruction": {"parts": [{"text": system}]},
         "contents": [{"role": "user", "parts": [{"text": user}]}],
         "generationConfig": {"temperature": 0.2, "maxOutputTokens": 2048},
     }
-    try:
-        data = post_gemini(model, payload, api_key)
-    except urllib.error.HTTPError as exc:
-        if exc.code != 404:
+    candidates = [model]
+    tried = {model}
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            data = post_gemini(candidates[attempt], payload, api_key)
+        except urllib.error.HTTPError as exc:
+            last_error = exc
+            print(f"::warning::Model '{candidates[attempt]}' failed: HTTP {exc.code}")
+            if exc.code not in (404, 429):
+                raise
+            if attempt == 0:
+                discovered = candidate_models(list_gemini_models(api_key), model)
+                print(f"::notice::Model candidates: {discovered}")
+                for name in discovered:
+                    if name not in tried:
+                        tried.add(name)
+                        candidates.append(name)
+            if exc.code == 429:
+                time.sleep(15)
+            if len(candidates) > attempt + 1:
+                continue
             raise
-        print(f"::warning::Model '{model}' not found, discovering available models…")
-        discovered = pick_model(list_gemini_models(api_key), model)
-        if not discovered or discovered == model:
-            raise
-        print(f"::notice::Retrying with discovered model '{discovered}'")
-        data = post_gemini(discovered, payload, api_key)
-        model = discovered
-    try:
-        parts = data["candidates"][0]["content"]["parts"]
-        return "".join(p.get("text", "") for p in parts).strip(), model
-    except (KeyError, IndexError, TypeError) as exc:
-        raise RuntimeError(f"Unexpected Gemini response: {json.dumps(data)[:500]}") from exc
+        try:
+            parts = data["candidates"][0]["content"]["parts"]
+            return "".join(p.get("text", "") for p in parts).strip(), candidates[attempt]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise RuntimeError(f"Unexpected Gemini response: {json.dumps(data)[:500]}") from exc
+    raise last_error or RuntimeError("No Gemini model available")
 
 
 def post_comment(pr_number: str, repo: str, body_file: str) -> None:
