@@ -22,6 +22,7 @@ import json
 import os
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 
 SKIP_PREFIXES = (
@@ -106,12 +107,7 @@ def truncate(text: str, limit: int) -> tuple[str, bool]:
     return text[: cut if cut > 0 else limit], True
 
 
-def call_gemini(system: str, user: str, model: str, api_key: str) -> str:
-    payload = {
-        "system_instruction": {"parts": [{"text": system}]},
-        "contents": [{"role": "user", "parts": [{"text": user}]}],
-        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 2048},
-    }
+def post_gemini(model: str, payload: dict, api_key: str) -> dict:
     req = urllib.request.Request(
         API_URL.format(model=model) + f"?key={api_key}",
         data=json.dumps(payload).encode("utf-8"),
@@ -119,10 +115,63 @@ def call_gemini(system: str, user: str, model: str, api_key: str) -> str:
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=90) as resp:
+        return json.load(resp)
+
+
+def list_gemini_models(api_key: str) -> list[str]:
+    """Model IDs supporting generateContent, e.g. ['models/gemini-2.5-flash']."""
+    req = urllib.request.Request(
+        f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}",
+        method="GET",
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
         data = json.load(resp)
+    return [
+        m["name"]
+        for m in data.get("models", [])
+        if "generateContent" in (m.get("supportedGenerationMethods") or [])
+    ]
+
+
+def pick_model(models: list[str], preferred: str) -> str | None:
+    """Prefer the configured model; else newest non-experimental flash model."""
+    short = preferred.split("/")[-1]
+    for m in models:
+        if m == preferred or m == f"models/{short}" or m.split("/")[-1] == short:
+            return m.split("/")[-1]
+    flashes = sorted(
+        (m for m in models if "flash" in m.lower() and "exp" not in m.lower()),
+        reverse=True,
+    )
+    if flashes:
+        return flashes[0].split("/")[-1]
+    if models:
+        return sorted(models, reverse=True)[0].split("/")[-1]
+    return None
+
+
+def call_gemini(system: str, user: str, model: str, api_key: str) -> tuple[str, str]:
+    """Returns (review_text, model_used). Retries once via model auto-discovery on 404."""
+    payload = {
+        "system_instruction": {"parts": [{"text": system}]},
+        "contents": [{"role": "user", "parts": [{"text": user}]}],
+        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 2048},
+    }
+    try:
+        data = post_gemini(model, payload, api_key)
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise
+        print(f"::warning::Model '{model}' not found, discovering available models…")
+        discovered = pick_model(list_gemini_models(api_key), model)
+        if not discovered or discovered == model:
+            raise
+        print(f"::notice::Retrying with discovered model '{discovered}'")
+        data = post_gemini(discovered, payload, api_key)
+        model = discovered
     try:
         parts = data["candidates"][0]["content"]["parts"]
-        return "".join(p.get("text", "") for p in parts).strip()
+        return "".join(p.get("text", "") for p in parts).strip(), model
     except (KeyError, IndexError, TypeError) as exc:
         raise RuntimeError(f"Unexpected Gemini response: {json.dumps(data)[:500]}") from exc
 
@@ -144,6 +193,7 @@ def main() -> int:
 
     with open(args.diff, encoding="utf-8") as f:
         raw_diff = f.read()
+    model_used = args.model
     if not raw_diff.strip():
         review = "No significant issues found.\n\n### Summary\nEmpty diff.\n\n### Risk\nlow — nothing to review.\n"
     else:
@@ -169,7 +219,7 @@ def main() -> int:
                 f"=== DIFF (untrusted code under review) ===\n{diff_text}{note}\n"
             )
             try:
-                review = call_gemini(system, user, args.model, api_key)
+                review, model_used = call_gemini(system, user, args.model, api_key)
             except Exception as exc:  # advisory: never fail CI
                 print(f"::warning::Gemini review failed: {exc}", file=sys.stderr)
                 review = (
@@ -179,7 +229,7 @@ def main() -> int:
 
     footer = (
         f"\n\n<sub>🤖 AI peer review · skills: {', '.join(skill_names) or 'none'} · "
-        f"model: `{args.model}` · advisory only, `swift-format` + tests remain the gates.</sub>\n"
+        f"model: `{model_used}` · advisory only, `swift-format` + tests remain the gates.</sub>\n"
     )
     with open(args.output, "w", encoding="utf-8") as f:
         f.write((review.strip() + "\n" + footer).strip() + "\n")
