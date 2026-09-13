@@ -146,14 +146,15 @@ def candidate_models(models: list[str], preferred: str) -> list[str]:
         name = m.split("/")[-1]
         if m == preferred or m == f"models/{short}" or name == short:
             ordered.append(name)
+    stable_flash_names = {
+        m.split("/")[-1]
+        for m in models
+        if "flash" in m.lower() and not PRERELEASE.search(m)
+    }
+    # Newest first; omni variants last (tight free-tier quota observed).
     stable_flash = sorted(
-        {
-            m.split("/")[-1]
-            for m in models
-            if "flash" in m.lower() and not PRERELEASE.search(m)
-        },
-        reverse=True,
-    )
+        [n for n in stable_flash_names if "omni" not in n.lower()], reverse=True
+    ) + sorted([n for n in stable_flash_names if "omni" in n.lower()], reverse=True)
     ordered.extend(n for n in stable_flash if n not in ordered)
     rest = sorted({m.split("/")[-1] for m in models} - set(ordered), reverse=True)
     ordered.extend(n for n in rest if "embed" not in n.lower() and "tts" not in n.lower())
