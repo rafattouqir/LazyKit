@@ -1,0 +1,56 @@
+name: AI Peer Review
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "**.lock"
+      - "**.png"
+
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Build PR diff
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git diff "origin/${BASE_REF}...HEAD" -- . \
+            ':(exclude)*.png' ':(exclude)package-lock.json' > pr.diff || true
+          head -c 400000 pr.diff > pr_truncated.diff
+          mv pr_truncated.diff pr.diff
+          wc -c pr.diff
+
+      - name: AI review with Gemini (free tier, skill-grounded)
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: gemini-2.0-flash
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 .github/scripts/ai_review.py \
+            --diff pr.diff \
+            --pr-number "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" \
+            --output review.md \
+            --post
+          echo "---- review preview ----"
+          head -c 2000 review.md
