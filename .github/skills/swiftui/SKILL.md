@@ -1,6 +1,6 @@
 ---
 name: swiftui
-description: SwiftUI idioms used across LazyKit views.
+description: SwiftUI idioms used across LazyKit views. Load when the diff touches views, @State/@Binding, .task or concurrency, animations, placeholders/loaders, or accessibility.
 ---
 
 # SwiftUI

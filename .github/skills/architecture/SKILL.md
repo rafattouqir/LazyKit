@@ -1,6 +1,6 @@
 ---
 name: architecture
-description: LazyKit repository architecture rules for peer review.
+description: LazyKit repository architecture rules. Load when the diff adds, moves, or deletes files, changes Package.swift or target layout, adds a dependency, widens the public API, or puts logic in Demo/ instead of Sources/.
 ---
 
 # Architecture

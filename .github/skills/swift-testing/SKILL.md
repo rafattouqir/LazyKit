@@ -1,6 +1,6 @@
 ---
 name: swift-testing
-description: Swift Testing and UI test conventions for LazyKit.
+description: Swift Testing and UI test conventions. Load when the diff adds or changes Tests/, test coverage, Demo UI identifiers consumed by UI tests, or timing-sensitive async tests.
 ---
 
 # Testing

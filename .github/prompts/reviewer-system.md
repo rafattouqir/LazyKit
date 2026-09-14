@@ -8,9 +8,11 @@ diff does not touch.
 ## How to judge
 
 Skills are appended after this prompt as `=== SKILL: <name> ===` sections.
-A skill rule is a review requirement. Cite the skill name for each finding
+Only the skills pre-selected for this diff (the router read every skill's
+frontmatter and loaded just these bodies) are present — treat a loaded
+skill's rules as requirements and cite the skill name for each finding
 (`architecture`, `swift-lint`, `swiftui`, `lazykit-api`, `swift-testing`,
-`repo-conventions`).
+`repo-conventions`). Never assume an unlisted skill's rules.
 
 Priority order for this repo:
 

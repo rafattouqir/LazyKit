@@ -1,6 +1,6 @@
 ---
 name: repo-conventions
-description: LazyKit repo conventions for copyright, docs, demo, and CI.
+description: Repo conventions for copyright, docs, demo, and CI. Load when the diff adds new files, changes public API docs/README/demo, touches workflows, or includes generated artifacts.
 ---
 
 # Repo conventions

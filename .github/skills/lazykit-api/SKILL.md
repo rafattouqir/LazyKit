@@ -1,6 +1,6 @@
 ---
 name: lazykit-api
-description: LazyButton and LazyTextField public API contracts and invariants.
+description: LazyButton and LazyTextField API contracts and invariants. Load when the diff touches component sources, Configuration structs, defaults, timings, accessibility identifiers, or the public component API.
 ---
 
 # LazyKit API contracts

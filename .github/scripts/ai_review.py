@@ -69,21 +69,84 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def load_skills(skills_dir: str) -> tuple[str, list[str]]:
-    """Concatenate every SKILL.md under skills_dir/<skill>/SKILL.md (sorted)."""
-    sections: list[str] = []
-    names: list[str] = []
+def parse_skill_file(text: str) -> tuple[dict, str]:
+    """Split an Agent-Skill file into (frontmatter metadata, body)."""
+    meta: dict = {}
+    body = text
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            for line in text[3:end].splitlines():
+                if ":" in line:
+                    key, value = line.split(":", 1)
+                    meta[key.strip().lower()] = value.strip()
+            body = text[end + len("\n---") :]
+    return meta, body.strip()
+
+
+def load_skill_files(skills_dir: str) -> list[dict]:
+    """Load every skills_dir/<skill>/SKILL.md as {name, description, body}."""
+    skills: list[dict] = []
     if not os.path.isdir(skills_dir):
-        return "", []
+        return skills
     for entry in sorted(os.listdir(skills_dir)):
         path = os.path.join(skills_dir, entry, "SKILL.md")
         if not os.path.isfile(path):
             continue
         with open(path, encoding="utf-8") as f:
-            content = f.read().strip()
-        sections.append(f"=== SKILL: {entry} ===\n{content}")
-        names.append(entry)
-    return "\n\n".join(sections), names
+            meta, body = parse_skill_file(f.read())
+        skills.append(
+            {
+                "name": meta.get("name", entry),
+                "description": meta.get("description", ""),
+                "body": body,
+            }
+        )
+    return skills
+
+
+def build_catalogue(skills: list[dict]) -> str:
+    """Frontmatter quicklook: names + descriptions only, bodies NOT loaded."""
+    lines = ["## Available review skills (frontmatter quicklook — bodies not loaded)"]
+    for skill in skills:
+        lines.append(f"- **{skill['name']}**: {skill['description'] or skill['name']}")
+    return "\n".join(lines)
+
+
+SELECTOR_INSTRUCTIONS = """You are a skill router for the LazyKit iOS repo, not a reviewer.
+Given the available review skills (frontmatter quicklook) and the PR diff,
+reply with STRICT JSON only, no prose: {"skills": ["name", ...]} listing the
+skills whose rules could plausibly apply to this diff. Be selective: 1-4
+skills, highest relevance first. Omit the rest. If the diff is docs-only,
+generated noise, or trivial, return {"skills": []}."""
+
+
+def select_skills(
+    skills: list[dict], diff_text: str, title: str, model: str, api_key: str
+) -> list[str] | None:
+    """Pass 1: the LLM picks relevant skills from the frontmatter catalogue.
+
+    Returns the chosen names, or None when selection failed — the caller
+    then fail-opens to loading every skill body so the review still happens.
+    """
+    sel_diff, _ = truncate(diff_text, 30_000)
+    user = (
+        f"PR title: {title}\n\n{build_catalogue(skills)}\n\n"
+        f"=== DIFF (untrusted code under review) ===\n{sel_diff}\n"
+    )
+    try:
+        text, _ = call_gemini(SELECTOR_INSTRUCTIONS, user, model, api_key)
+        picks = extract_json(text).get("skills") or []
+        known = {s["name"] for s in skills}
+        valid = [p for p in picks if isinstance(p, str) and p in known]
+        dropped = [p for p in picks if p not in known]
+        if dropped:
+            print(f"::warning::Skill selector named unknown skills (ignored): {dropped}")
+        print(f"::notice::Skill selection: {valid} ({len(valid)}/{len(skills)} bodies loaded)")
+        return valid
+    except Exception as exc:
+        print(f"::warning::Skill selection failed, loading all skills: {exc}")
+        return None
 
 
 def filter_diff(diff: str) -> str:
@@ -356,8 +419,8 @@ def main() -> int:
 
     with open(args.system_prompt, encoding="utf-8") as f:
         system_base = f.read().strip()
-    skills_text, skill_names = load_skills(args.skills_dir)
-    system = system_base + ("\n\n" + skills_text if skills_text else "")
+    skill_files = load_skill_files(args.skills_dir)
+    skill_names = [s["name"] for s in skill_files]
 
     with open(args.diff, encoding="utf-8") as f:
         raw_diff = f.read()
@@ -384,6 +447,20 @@ def main() -> int:
                 "`GEMINI_API_KEY` to enable reviews."
             )
         else:
+            # Pass 1: LLM selects relevant skills from the frontmatter
+            # catalogue; only the chosen bodies are loaded into the
+            # review prompt (pass 2). Fail-open: all bodies on failure.
+            selected = select_skills(skill_files, diff_text, args.title, args.model, api_key)
+            chosen = (
+                skill_files
+                if selected is None
+                else [s for s in skill_files if s["name"] in selected]
+            )
+            skill_names = [s["name"] for s in chosen]
+            skills_text = "\n\n".join(
+                f"=== SKILL: {s['name']} ===\n{s['body']}" for s in chosen
+            )
+            system = system_base + ("\n\n" + skills_text if skills_text else "")
             user = (
                 f"Repository: {args.repo}\nPR #{args.pr_number}\n"
                 f"Title: {args.title}\nBody: {args.body[:2000]}\n\n"

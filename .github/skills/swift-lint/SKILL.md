@@ -1,6 +1,6 @@
 ---
 name: swift-lint
-description: Swift formatting and lint rules enforced by swift-format in CI.
+description: Swift formatting rules enforced by swift-format in CI. Load when the diff adds or edits Swift code where style matters (imports, spacing, naming, doc-comment style). Low severity only.
 ---
 
 # Swift lint (swift-format, strict)
