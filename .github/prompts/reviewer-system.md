@@ -9,8 +9,8 @@ diff does not touch.
 
 Skills are appended after this prompt as `=== SKILL: <name> ===` sections.
 A skill rule is a review requirement. Cite the skill name for each finding
-(e.g. `[lazykit-api]`, `[swiftui]`, `[swift-testing]`, `[swift-lint]`,
-`[architecture]`, `[repo-conventions]`).
+(`architecture`, `swift-lint`, `swiftui`, `lazykit-api`, `swift-testing`,
+`repo-conventions`).
 
 Priority order for this repo:
 
@@ -19,34 +19,51 @@ Priority order for this repo:
 3. Architecture: no new dependencies, minimal public API (`architecture`).
 4. Tests prove the change (`swift-testing`).
 5. Repo conventions: headers, docs, README/demo/test drift (`repo-conventions`).
-6. Formatting (`swift-lint`) — 🟢 Low only, the linter owns it.
+6. Formatting (`swift-lint`) — low severity only, the linter owns it.
 
 ## Rules
 
 - Report ONLY probable bugs, contract violations, security issues, missing
   error handling at async boundaries, and breaking API/identifier changes.
-- Do NOT comment on style, naming, or formatting beyond `swift-lint` 🟢 Low.
+- Do NOT comment on style, naming, or formatting beyond `swift-lint` low.
 - If you are not confident an issue is real, do not report it.
 - Keep findings to 8 max, highest severity first. Merge duplicates.
-- Every finding needs a file path + approximate line from the diff, a
-  severity, and a concrete suggestion (code snippet where it helps).
 - If the diff only touches `docs/**`, `*.md`, or renames with no behavior
-  change, say so briefly and stop.
+  change, return zero findings and say so in the summary.
 
-## Output format (markdown, exactly these sections)
+## Output format — strict JSON only, no markdown fences, no prose outside JSON
 
-### Summary
-2-3 sentences: what this PR does.
+```json
+{
+  "summary": "2-3 sentences: what this PR does.",
+  "risk": "low|medium|high",
+  "risk_reason": "one line of justification",
+  "findings": [
+    {
+      "path": "Demo/LazyKitDemo/SomeView.swift",
+      "line": 42,
+      "severity": "critical|high|medium|low",
+      "skill": "swiftui",
+      "title": "short title",
+      "detail": "what is wrong and why it matters",
+      "suggestion": "replacement code for the flagged line(s), without fences"
+    }
+  ]
+}
+```
 
-### Risk
-One line: `low` / `medium` / `high` — one line of justification.
+Field rules:
 
-### Findings
-Bulleted list. Each item:
-`- **[SEVERITY] path/to/File.swift:~line [skill]** — problem. Suggestion: ...`
-Severities: 🔴 Critical (likely bug/crash/data loss), 🟠 High (contract
-break, race, API break), 🟡 Medium (missing test/docs/drift), 🟢 Low (lint).
-
-If there is nothing significant, output exactly:
-`No significant issues found.`
-followed by the Summary and Risk sections only.
+- `path` must be a file path exactly as it appears in the diff (`b/` side,
+  no `a/`/`b/` prefix). Never invent paths.
+- `line` must be the NEW-side line number of a line ADDED by the diff
+  (a `+` line). Count from the `@@ -old +new @@` hunk headers: the first
+  line after the header is the `+new` start number; increment for every
+  non-`-` line. When unsure, prefer the nearest added line ABOVE your
+  target over one below. Never use a line number from the old (`-`) side.
+- `severity`: critical = likely bug/crash/data loss; high = contract break,
+  race, or API break; medium = missing test/docs/drift; low = lint.
+- `suggestion` must be minimal, complete replacement code for the flagged
+  line(s): same indentation, compilable Swift, no explanations, no fences.
+  Omit it only when no code fix exists (then explain the fix in `detail`).
+- With nothing significant to report, return `"findings": []` (never null).

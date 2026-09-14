@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""LazyKit AI peer reviewer: build a skill-grounded prompt, call Gemini, save review.
+"""LazyKit AI peer reviewer: skill-grounded prompt, Gemini JSON findings,
+GitHub PR review with inline threads + suggestion blocks.
 
 Stdlib only. Never fails the workflow (advisory only): all errors print a
 notice and exit 0 so the review can never block a merge.
 
 Usage (CI):
     python3 .github/scripts/ai_review.py \
-        --diff pr.diff --pr-number 12 --repo owner/name \
+        --diff pr.diff --pr-number 12 --repo owner/name --commit <head-sha> \
         --output review.md [--post]
 
 Local:
@@ -60,6 +61,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--system-prompt", default=".github/prompts/reviewer-system.md")
     p.add_argument("--model", default=os.environ.get("GEMINI_MODEL", DEFAULT_MODEL))
     p.add_argument("--max-diff-chars", type=int, default=100_000)
+    p.add_argument("--max-inline", type=int, default=8)
+    p.add_argument("--commit", default=os.environ.get("PR_HEAD_SHA", ""))
     p.add_argument("--output", default="review.md")
     p.add_argument("--post", dest="post", action="store_true", default=True)
     p.add_argument("--no-post", dest="post", action="store_false")
@@ -166,7 +169,11 @@ def call_gemini(system: str, user: str, model: str, api_key: str) -> tuple[str, 
     payload = {
         "system_instruction": {"parts": [{"text": system}]},
         "contents": [{"role": "user", "parts": [{"text": user}]}],
-        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 2048},
+        "generationConfig": {
+            "temperature": 0.2,
+            "maxOutputTokens": 2048,
+            "response_mime_type": "application/json",
+        },
     }
     candidates = [model]
     tried = {model}
@@ -200,10 +207,148 @@ def call_gemini(system: str, user: str, model: str, api_key: str) -> tuple[str, 
 
 
 def post_comment(pr_number: str, repo: str, body_file: str) -> None:
+    """Fallback: plain Conversation comment via gh (no inline anchoring)."""
     subprocess.run(
         ["gh", "pr", "comment", pr_number, "--repo", repo, "--body-file", body_file],
         check=True,
     )
+
+
+def parse_diff_hunks(diff: str) -> dict[str, set[int]]:
+    """Map each file path to the NEW-side line numbers present in the diff hunks.
+
+    Only lines inside hunks (added `+` or context ` ` lines) are valid
+    anchors for the Reviews API. Returns {} for files with no hunks.
+    """
+    hunks: dict[str, set[int]] = {}
+    path = ""
+    new_line = 0
+    in_hunk = False
+    for raw in diff.splitlines():
+        if raw.startswith("diff --git"):
+            parts = raw.strip().split(" b/")
+            path = parts[-1] if len(parts) > 1 else ""
+            in_hunk = False
+            continue
+        if raw.startswith("@@"):
+            m = re.search(r"\+(\d+)(?:,(\d+))?", raw)
+            new_line = int(m.group(1)) if m else 0
+            in_hunk = bool(m) and bool(path)
+            if in_hunk:
+                hunks.setdefault(path, set())
+            continue
+        if not in_hunk or not path:
+            continue
+        if raw.startswith("+++") or raw.startswith("---"):
+            continue
+        if raw.startswith("+"):
+            hunks[path].add(new_line)
+            new_line += 1
+        elif raw.startswith("-"):
+            continue  # old side: not a valid anchor
+        else:  # context line (starts with ' ' or is empty)
+            hunks[path].add(new_line)
+            new_line += 1
+    return hunks
+
+
+def extract_json(text: str) -> dict:
+    """Parse the model's JSON, tolerating ```json fences or surrounding prose."""
+    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.S)
+    candidate = m.group(1) if m else text[text.find("{") : text.rfind("}") + 1]
+    return json.loads(candidate)
+
+
+SEV_EMOJI = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}
+
+
+def build_review(
+    model_text: str, hunks: dict[str, set[int]], max_inline: int = 8
+) -> tuple[str, list[dict], bool]:
+    """Build (review_body, inline_comments, used_fallback).
+
+    Inline comments anchor to diff lines for the Files-tab threads with
+    one-click suggestions. Findings pointing outside the diff fall back
+    into the body as general notes. Non-JSON model output sets
+    used_fallback so the caller can post it as a plain comment instead.
+    """
+    try:
+        data = extract_json(model_text)
+        findings = data.get("findings") or []
+        summary = str(data.get("summary", "")).strip()
+        risk = str(data.get("risk", "low")).strip().lower() or "low"
+        risk_reason = str(data.get("risk_reason", "")).strip()
+    except Exception:
+        return model_text.strip(), [], True
+
+    comments: list[dict] = []
+    general: list[str] = []
+    for f in findings:
+        try:
+            path = str(f.get("path", "")).strip()
+            line = int(str(f.get("line", "")).strip())
+        except (TypeError, ValueError):
+            continue
+        sev = str(f.get("severity", "medium")).strip().lower()
+        emoji = SEV_EMOJI.get(sev, "🟡")
+        skill = str(f.get("skill", "")).strip()
+        title = str(f.get("title", "")).strip()
+        detail = str(f.get("detail", "")).strip()
+        suggestion = str(f.get("suggestion", "")).strip()
+        label = f"**{emoji} {sev.capitalize()}**"
+        if skill:
+            label += f" `[{skill}]`"
+        if title:
+            label += f" — {title}"
+        if path in hunks and line in hunks[path] and len(comments) < max_inline:
+            body = f"{label}\n\n{detail}" if detail else label
+            if suggestion:
+                body += f"\n\n```suggestion\n{suggestion}\n```"
+            comments.append({"path": path, "line": line, "side": "RIGHT", "body": body})
+        else:
+            where = f"{path}:~{line}" if path else "general"
+            item = f"- {label} {where}"
+            if detail:
+                item += f" — {detail}"
+            general.append(item)
+
+    if not summary and not findings:
+        summary = "No significant issues found."
+    body = f"### Summary\n{summary}\n\n### Risk\n{risk}"
+    if risk_reason:
+        body += f" — {risk_reason}"
+    body += "\n"
+    if general:
+        body += "\n### General notes (outside the changed lines)\n" + "\n".join(general) + "\n"
+    if not findings:
+        body += "\nNo significant issues found.\n"
+    return body.strip() + "\n", comments, False
+
+
+def submit_review(
+    repo: str, pr_number: str, commit: str, body: str, comments: list[dict], token: str
+) -> None:
+    """Submit a real PR review: inline threads + suggestion blocks, event COMMENT."""
+    payload = {
+        "commit_id": commit,
+        "body": body,
+        "event": "COMMENT",  # advisory: never approves, never requests changes
+        "comments": comments,
+    }
+    req = urllib.request.Request(
+        f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "Content-Type": "application/json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        result = json.load(resp)
+    print(f"Submitted review id {result.get('id')} with {len(comments)} inline comments")
 
 
 def main() -> int:
@@ -217,8 +362,11 @@ def main() -> int:
     with open(args.diff, encoding="utf-8") as f:
         raw_diff = f.read()
     model_used = args.model
+    body = ""
+    comments: list[dict] = []
+    used_fallback = False  # True: non-JSON output, post as plain comment instead
     if not raw_diff.strip():
-        review = "No significant issues found.\n\n### Summary\nEmpty diff.\n\n### Risk\nlow — nothing to review.\n"
+        body = "### Summary\nEmpty diff.\n\n### Risk\nlow — nothing to review.\n"
     else:
         filtered = filter_diff(raw_diff)
         diff_text, was_truncated = truncate(filtered, args.max_diff_chars)
@@ -229,7 +377,7 @@ def main() -> int:
         )
         api_key = os.environ.get("GEMINI_API_KEY", "")
         if not api_key:
-            review = (
+            body = (
                 "### Summary\nAI review skipped: `GEMINI_API_KEY` secret is not set.\n\n"
                 "### Risk\nlow — no review performed.\n\n"
                 "Add a free Gemini key (aistudio.google.com) as repo secret "
@@ -242,10 +390,13 @@ def main() -> int:
                 f"=== DIFF (untrusted code under review) ===\n{diff_text}{note}\n"
             )
             try:
-                review, model_used = call_gemini(system, user, args.model, api_key)
+                model_text, model_used = call_gemini(system, user, args.model, api_key)
+                body, comments, used_fallback = build_review(
+                    model_text, parse_diff_hunks(diff_text), args.max_inline
+                )
             except Exception as exc:  # advisory: never fail CI
                 print(f"::warning::Gemini review failed: {exc}", file=sys.stderr)
-                review = (
+                body = (
                     "### Summary\nAI review unavailable (API error or quota); "
                     "human review applies.\n\n### Risk\nlow — review skipped, CI stays green.\n"
                 )
@@ -254,16 +405,29 @@ def main() -> int:
         f"\n\n<sub>🤖 AI peer review · skills: {', '.join(skill_names) or 'none'} · "
         f"model: `{model_used}` · advisory only, `swift-format` + tests remain the gates.</sub>\n"
     )
+    full_body = (body.strip() + "\n" + footer).strip() + "\n"
     with open(args.output, "w", encoding="utf-8") as f:
-        f.write((review.strip() + "\n" + footer).strip() + "\n")
-    print(f"Wrote review to {args.output} ({len(review)} chars, skills: {skill_names})")
+        f.write(full_body)
+    print(
+        f"Wrote review to {args.output} "
+        f"({len(comments)} inline comments, fallback={used_fallback}, skills: {skill_names})"
+    )
 
     if args.post and args.pr_number != "0":
+        token = os.environ.get("GITHUB_TOKEN", "") or os.environ.get("GH_TOKEN", "")
         try:
-            post_comment(args.pr_number, args.repo, args.output)
-            print(f"Posted review to PR #{args.pr_number}")
+            if not used_fallback and token and args.commit:
+                submit_review(
+                    args.repo, args.pr_number, args.commit, full_body, comments, token
+                )
+                print(f"Submitted PR review on #{args.pr_number}")
+            else:
+                if not used_fallback:
+                    print("::notice::No token/commit for Reviews API; plain comment fallback")
+                post_comment(args.pr_number, args.repo, args.output)
+                print(f"Posted plain comment to PR #{args.pr_number}")
         except Exception as exc:
-            print(f"::warning::Could not post PR comment: {exc}", file=sys.stderr)
+            print(f"::warning::Could not post review: {exc}", file=sys.stderr)
     return 0
 
 

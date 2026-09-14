@@ -42,14 +42,17 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: gemini-2.0-flash
           GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python3 .github/scripts/ai_review.py \
             --diff pr.diff \
             --pr-number "${{ github.event.pull_request.number }}" \
             --repo "${{ github.repository }}" \
+            --commit "${{ github.event.pull_request.head.sha }}" \
             --output review.md \
             --post
           echo "---- review preview ----"
