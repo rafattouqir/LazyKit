@@ -43,11 +43,24 @@ struct NoteView: View {
 
 ## Installation
 
-In Xcode, choose **File ▸ Add Package Dependencies…** and enter:
+LazyKit follows [semantic versioning](https://semver.org), so pin a release in
+`Package.swift`:
+
+```swift
+dependencies: [
+    .package(url: "https://github.com/rafattouqir/LazyKit.git", from: "0.1.0")
+]
+```
+
+In Xcode, choose **File ▸ Add Package Dependencies…**, enter the repository
+URL, and pick the version you want:
 
 ```text
 https://github.com/rafattouqir/LazyKit.git
 ```
+
+`from:` accepts any 0.1.x release. Use `.exact("0.1.0")` to pin the tag, or
+`.branch("main")` to track unreleased changes.
 
 Then import the product:
 
@@ -230,6 +243,13 @@ xcodebuild -project Demo/LazyKitDemo.xcodeproj \
 
 CI runs the formatter lint and the test suites on every push and pull request;
 the demo target's lint build phase reports formatter issues as Xcode warnings.
+
+## Releases
+
+Releases are tagged on `main`, so a tag like
+[`0.1.0`](https://github.com/rafattouqir/LazyKit/releases/tag/0.1.0) always
+points at a commit that passed CI. Notable changes are listed in
+[CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
