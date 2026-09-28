@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
-"""LazyKit AI peer reviewer: skill-grounded prompt, Gemini JSON findings,
+"""LazyKit AI peer reviewer: skill-grounded prompt, CommandCode JSON findings,
 GitHub PR review with inline threads + suggestion blocks.
+
+Talks to the CommandCode Provider API, which speaks OpenAI Chat Completions:
+    POST https://api.commandcode.ai/provider/v1/chat/completions
+    Authorization: Bearer $COMMANDCODE_API_KEY
 
 Stdlib only. Never fails the workflow (advisory only): all errors print a
 notice and exit 0 so the review can never block a merge.
@@ -12,7 +16,7 @@ Usage (CI):
 
 Local:
     git diff origin/main...HEAD > /tmp/pr.diff
-    GEMINI_API_KEY=... python3 .github/scripts/ai_review.py \
+    COMMANDCODE_API_KEY=... python3 .github/scripts/ai_review.py \
         --diff /tmp/pr.diff --pr-number 0 --repo local/test --no-post
 """
 
@@ -46,8 +50,14 @@ SKIP_SUFFIXES = (
     ".DS_Store",
     ".xcuserstate",
 )
-DEFAULT_MODEL = "gemini-2.0-flash"
-API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash"
+API_URL = "https://api.commandcode.ai/provider/v1/chat/completions"
+MODELS_URL = "https://api.commandcode.ai/provider/v1/models"
+CHAT_ENDPOINT = "/chat/completions"
+# Cloudflare fronts the CommandCode API and answers 403 "error code: 1010" to
+# urllib's default User-Agent. Any explicit UA clears it; without this every
+# request fails and the review silently degrades to "unavailable".
+USER_AGENT = "LazyKit-AI-Review/1.0 (+https://github.com/rafattouqir/LazyKit)"
 
 
 def parse_args() -> argparse.Namespace:
@@ -59,7 +69,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--body", default=os.environ.get("PR_BODY", ""))
     p.add_argument("--skills-dir", default=".github/skills")
     p.add_argument("--system-prompt", default=".github/prompts/reviewer-system.md")
-    p.add_argument("--model", default=os.environ.get("GEMINI_MODEL", DEFAULT_MODEL))
+    p.add_argument("--model", default=os.environ.get("COMMANDCODE_MODEL", DEFAULT_MODEL))
     p.add_argument("--max-diff-chars", type=int, default=100_000)
     p.add_argument("--max-inline", type=int, default=8)
     p.add_argument("--commit", default=os.environ.get("PR_HEAD_SHA", ""))
@@ -135,7 +145,7 @@ def select_skills(
         f"=== DIFF (untrusted code under review) ===\n{sel_diff}\n"
     )
     try:
-        text, _ = call_gemini(SELECTOR_INSTRUCTIONS, user, model, api_key)
+        text, _ = call_commandcode(SELECTOR_INSTRUCTIONS, user, model, api_key)
         picks = extract_json(text).get("skills") or []
         known = {s["name"] for s in skills}
         valid = [p for p in picks if isinstance(p, str) and p in known]
@@ -175,98 +185,164 @@ def truncate(text: str, limit: int) -> tuple[str, bool]:
     return text[: cut if cut > 0 else limit], True
 
 
-def post_gemini(model: str, payload: dict, api_key: str) -> dict:
+def post_commandcode(payload: dict, api_key: str) -> dict:
     req = urllib.request.Request(
-        API_URL.format(model=model) + f"?key={api_key}",
+        API_URL,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": USER_AGENT,
+        },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=90) as resp:
+    with urllib.request.urlopen(req, timeout=120) as resp:
         return json.load(resp)
 
 
-def list_gemini_models(api_key: str) -> list[str]:
-    """Model IDs supporting generateContent, e.g. ['models/gemini-2.5-flash']."""
+def list_commandcode_models(api_key: str) -> list[dict]:
+    """Model objects from /provider/v1/models, each with supported_endpoints."""
     req = urllib.request.Request(
-        f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}",
+        MODELS_URL,
+        headers={"Authorization": f"Bearer {api_key}", "User-Agent": USER_AGENT},
         method="GET",
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
-        data = json.load(resp)
-    return [
-        m["name"]
-        for m in data.get("models", [])
-        if "generateContent" in (m.get("supportedGenerationMethods") or [])
+        return json.load(resp).get("data") or []
+
+
+PRERELEASE = re.compile(r"preview|exp\d*|experimental|beta|alpha|\brc\b|stealth", re.IGNORECASE)
+NOISE = re.compile(r"embed|rerank|tts|whisper|image|video|moderation", re.IGNORECASE)
+
+
+def candidate_models(models: list[dict], preferred: str) -> list[str]:
+    """Ordered fallback model IDs that can actually serve /chat/completions.
+
+    Claude models are /messages-only, so sending one here is a hard 400 —
+    they are filtered out via supported_endpoints. Same-family siblings rank
+    first (best substitute for a retired flash), then everything else.
+    """
+    def serves_chat(entry: dict) -> bool:
+        endpoints = entry.get("supported_endpoints") or []
+        return not endpoints or CHAT_ENDPOINT in endpoints
+
+    ids = [
+        entry["id"]
+        for entry in models
+        if entry.get("id") and serves_chat(entry) and not NOISE.search(entry["id"])
     ]
-
-
-PRERELEASE = re.compile(r"preview|exp\d*|experimental|beta|alpha|\brc\b", re.IGNORECASE)
-
-
-def candidate_models(models: list[str], preferred: str) -> list[str]:
-    """Ordered model short-IDs: preferred, then stable flash, then anything else."""
-    short = preferred.split("/")[-1]
-    ordered: list[str] = []
-    for m in models:
-        name = m.split("/")[-1]
-        if m == preferred or m == f"models/{short}" or name == short:
-            ordered.append(name)
-    stable_flash_names = {
-        m.split("/")[-1]
-        for m in models
-        if "flash" in m.lower() and not PRERELEASE.search(m)
-    }
-    # Newest first; omni variants last (tight free-tier quota observed).
-    stable_flash = sorted(
-        [n for n in stable_flash_names if "omni" not in n.lower()], reverse=True
-    ) + sorted([n for n in stable_flash_names if "omni" in n.lower()], reverse=True)
-    ordered.extend(n for n in stable_flash if n not in ordered)
-    rest = sorted({m.split("/")[-1] for m in models} - set(ordered), reverse=True)
-    ordered.extend(n for n in rest if "embed" not in n.lower() and "tts" not in n.lower())
+    ordered: list[str] = [preferred] if preferred in ids else []
+    family = preferred.split("/")[0] + "/" if "/" in preferred else ""
+    siblings = [i for i in ids if family and i.startswith(family) and i not in ordered]
+    ordered.extend(sorted(s for s in siblings if not PRERELEASE.search(s)))
+    ordered.extend(sorted(s for s in siblings if PRERELEASE.search(s)))
+    ordered.extend(sorted(i for i in ids if i not in ordered))
     return ordered[:4]
 
 
-def call_gemini(system: str, user: str, model: str, api_key: str) -> tuple[str, str]:
-    """Returns (review_text, model_used). Tries up to 3 models (404/429 fallthrough)."""
-    payload = {
-        "system_instruction": {"parts": [{"text": system}]},
-        "contents": [{"role": "user", "parts": [{"text": user}]}],
-        "generationConfig": {
-            "temperature": 0.2,
-            "maxOutputTokens": 2048,
-            "response_mime_type": "application/json",
-        },
+def error_note(exc: urllib.error.HTTPError) -> str:
+    """Short reason from the CommandCode error envelope, for the log line."""
+    try:
+        body = json.loads(exc.read().decode("utf-8", "replace"))
+        err = body.get("error") or {}
+        message = err.get("message") or err.get("type") or ""
+        code = err.get("code")
+        return f"{code}: {message}" if code else str(message)
+    except Exception:
+        return str(exc.reason or "")
+
+
+def build_payload(model: str, system: str, user: str, minimal: bool = False) -> dict:
+    """OpenAI Chat Completions body. `minimal` drops the optional knobs.
+
+    No max_tokens on purpose: `deepseek-v4.1-flash` is a reasoning model, so a
+    cap is shared between reasoning_content and the answer. A 4096 cap was
+    consumed entirely by reasoning on a real diff, returning finish_reason
+    'length' with empty content. The provider default is sized for this.
+
+    response_format / temperature are undocumented by CommandCode but accepted
+    (verified against the live API). A model that rejects them gets one retry
+    with just model + messages, and _OPTIONAL_PARAMS_OK latches off so later
+    calls in the same run don't pay for the same discovery twice.
+    """
+    payload: dict = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
     }
+    if not minimal and _OPTIONAL_PARAMS_OK:
+        payload["temperature"] = 0.2
+        payload["response_format"] = {"type": "json_object"}
+    return payload
+
+
+def completion_text(data: dict) -> str:
+    """choices[0].message.content, or raise with enough detail to debug."""
+    choices = data.get("choices") or []
+    if not choices:
+        raise RuntimeError(f"Unexpected CommandCode response: {json.dumps(data)[:500]}")
+    choice = choices[0]
+    content = (choice.get("message") or {}).get("content") or ""
+    if isinstance(content, list):  # some gateways return content parts
+        content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
+    text = str(content).strip()
+    if not text:
+        raise RuntimeError(
+            f"Empty completion (finish_reason={choice.get('finish_reason')!r}): "
+            f"{json.dumps(data)[:300]}"
+        )
+    return text
+
+
+FALLTHROUGH_STATUS = (400, 404, 429)
+
+# Latches off the first time the API rejects the optional request params, so
+# the skill-selector and reviewer passes don't each rediscover the same 400.
+_OPTIONAL_PARAMS_OK = True
+
+
+def call_commandcode(system: str, user: str, model: str, api_key: str) -> tuple[str, str]:
+    """Returns (review_text, model_used). Walks up to 4 models on 400/404/429/5xx."""
+    global _OPTIONAL_PARAMS_OK
     candidates = [model]
-    tried = {model}
+    tried: set[str] = set()
+    discovered = False
     last_error: Exception | None = None
-    for attempt in range(3):
-        try:
-            data = post_gemini(candidates[attempt], payload, api_key)
-        except urllib.error.HTTPError as exc:
-            last_error = exc
-            print(f"::warning::Model '{candidates[attempt]}' failed: HTTP {exc.code}")
-            if exc.code not in (404, 429):
-                raise
-            if attempt == 0:
-                discovered = candidate_models(list_gemini_models(api_key), model)
-                print(f"::notice::Model candidates: {discovered}")
-                for name in discovered:
-                    if name not in tried:
-                        tried.add(name)
-                        candidates.append(name)
-            if exc.code == 429:
-                time.sleep(15)
-            if len(candidates) > attempt + 1:
-                continue
-            raise
-        try:
-            parts = data["candidates"][0]["content"]["parts"]
-            return "".join(p.get("text", "") for p in parts).strip(), candidates[attempt]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise RuntimeError(f"Unexpected Gemini response: {json.dumps(data)[:500]}") from exc
-    raise last_error or RuntimeError("No Gemini model available")
+    for name in candidates:
+        if name in tried:
+            continue
+        tried.add(name)
+        for minimal in (False, True):
+            try:
+                data = post_commandcode(build_payload(name, system, user, minimal), api_key)
+                return completion_text(data), name
+            except urllib.error.HTTPError as exc:
+                last_error = exc
+                note = error_note(exc)
+                if exc.code == 400 and not minimal:
+                    _OPTIONAL_PARAMS_OK = False
+                    print(f"::warning::'{name}' rejected optional params, retrying minimal: {note}")
+                    continue
+                print(f"::warning::Model '{name}' failed: HTTP {exc.code} {note}")
+                if exc.code not in FALLTHROUGH_STATUS and exc.code < 500:
+                    raise  # 401/403: key or plan problem, another model won't help
+                if exc.code == 429:
+                    time.sleep(15)
+            except Exception as exc:  # timeout, empty completion, bad JSON
+                last_error = exc
+                print(f"::warning::Model '{name}' failed: {exc}")
+        if not discovered:
+            discovered = True
+            try:
+                candidates.extend(candidate_models(list_commandcode_models(api_key), model))
+                print(f"::notice::Model candidates: {candidates}")
+            except Exception as exc:
+                print(f"::warning::Model discovery failed: {exc}")
+        if len(tried) >= 4:
+            break
+    raise last_error or RuntimeError("No CommandCode model available")
 
 
 def post_comment(pr_number: str, repo: str, body_file: str) -> None:
@@ -438,13 +514,13 @@ def main() -> int:
             if was_truncated
             else ""
         )
-        api_key = os.environ.get("GEMINI_API_KEY", "")
+        api_key = os.environ.get("COMMANDCODE_API_KEY", "")
         if not api_key:
             body = (
-                "### Summary\nAI review skipped: `GEMINI_API_KEY` secret is not set.\n\n"
+                "### Summary\nAI review skipped: `COMMANDCODE_API_KEY` secret is not set.\n\n"
                 "### Risk\nlow — no review performed.\n\n"
-                "Add a free Gemini key (aistudio.google.com) as repo secret "
-                "`GEMINI_API_KEY` to enable reviews."
+                "Add a CommandCode Provider API key (commandcode.ai/studio/provider) "
+                "as repo secret `COMMANDCODE_API_KEY` to enable reviews."
             )
         else:
             # Pass 1: LLM selects relevant skills from the frontmatter
@@ -467,12 +543,12 @@ def main() -> int:
                 f"=== DIFF (untrusted code under review) ===\n{diff_text}{note}\n"
             )
             try:
-                model_text, model_used = call_gemini(system, user, args.model, api_key)
+                model_text, model_used = call_commandcode(system, user, args.model, api_key)
                 body, comments, used_fallback = build_review(
                     model_text, parse_diff_hunks(diff_text), args.max_inline
                 )
             except Exception as exc:  # advisory: never fail CI
-                print(f"::warning::Gemini review failed: {exc}", file=sys.stderr)
+                print(f"::warning::CommandCode review failed: {exc}", file=sys.stderr)
                 body = (
                     "### Summary\nAI review unavailable (API error or quota); "
                     "human review applies.\n\n### Risk\nlow — review skipped, CI stays green.\n"

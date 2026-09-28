@@ -21,7 +21,7 @@ jobs:
   review:
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
@@ -37,10 +37,10 @@ jobs:
           mv pr_truncated.diff pr.diff
           wc -c pr.diff
 
-      - name: AI review with Gemini (free tier, skill-grounded)
+      - name: AI review with CommandCode (skill-grounded)
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: gemini-2.0-flash
+          COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
+          COMMANDCODE_MODEL: deepseek/deepseek-v4.1-flash
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_TITLE: ${{ github.event.pull_request.title }}
