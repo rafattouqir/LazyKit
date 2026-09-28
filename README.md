@@ -256,7 +256,10 @@ Scripts/release.sh minor       # or auto|patch|major|X.Y.Z
 ```
 
 The manual **Release** workflow (Actions ▸ Release ▸ Run workflow) runs the
-same script on CI when you would rather not release from a local clone.
+same script on CI when you would rather not release from a local clone. It runs
+on Linux and skips the test gate, since the package imports SwiftUI and cannot
+build there; `lint.yml` and `tests.yml` cover the code on every push and pull
+request.
 
 ## Releases
 

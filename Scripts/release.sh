@@ -268,7 +268,7 @@ if [ "$assume_yes" = 0 ]; then
     esac
 fi
 
-first_section=$(grep -n '^## ' CHANGELOG.md | head -1 | cut -d: -f1 || true)
+first_section=$(grep -n '^## ' CHANGELOG.md | head -n 1 | cut -d: -f1 || true)
 tmp_changelog=$(mktemp)
 if [ -n "$first_section" ]; then
     head -n $((first_section - 1)) CHANGELOG.md > "$tmp_changelog"
