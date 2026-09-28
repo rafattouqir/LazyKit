@@ -1,0 +1,83 @@
+name: Release
+
+# On-demand releases, run from the Actions tab (Actions > Release > Run workflow).
+# The workflow runs the same Scripts/release.sh a local release uses:
+#
+#   1. compute the next version from the conventional commits since the last tag
+#   2. run the formatter and the unit tests as a gate
+#   3. write the changelog entry and commit it as "chore: release X.Y.Z"
+#   4. tag that commit and push main plus the tag
+#   5. create the GitHub release from the changelog entry
+#
+# Pushes made with the workflow token do not start other workflows, so the gate
+# inside the script is what protects the tag; lint.yml and tests.yml still run
+# on every pull request.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump to apply
+        type: choice
+        default: auto
+        options:
+          - auto
+          - patch
+          - minor
+          - major
+      version:
+        description: Explicit version, for example 0.2.0 (overrides the bump)
+        type: string
+        required: false
+      dry_run:
+        description: Print the plan without tagging or releasing
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Configure the release identity
+        # Change these when the author of the release commits should differ,
+        # for example to the GitHub noreply address.
+        run: |
+          git checkout -B main
+          git config user.name "Rafat Touqir"
+          git config user.email "rafsun.ra@gmail.com"
+
+      - name: Run the release script
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_BUMP: ${{ inputs.bump }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          target="$INPUT_BUMP"
+          if [ -n "$INPUT_VERSION" ]; then
+            target="$INPUT_VERSION"
+          fi
+          if [ "$INPUT_DRY_RUN" = "true" ]; then
+            Scripts/release.sh "$target" --yes --dry-run
+          else
+            Scripts/release.sh "$target" --yes
+          fi
+
+      - name: Show the result
+        if: always()
+        run: git log --oneline --decorate -5

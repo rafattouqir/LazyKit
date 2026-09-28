@@ -244,6 +244,20 @@ xcodebuild -project Demo/LazyKitDemo.xcodeproj \
 CI runs the formatter lint and the test suites on every push and pull request;
 the demo target's lint build phase reports formatter issues as Xcode warnings.
 
+### Releasing
+
+`Scripts/release.sh` derives the next version from the conventional commits
+since the last tag, writes the changelog entry, commits it as
+`chore: release X.Y.Z`, and publishes the tag and the GitHub release:
+
+```bash
+Scripts/release.sh --dry-run   # preview the version and the notes
+Scripts/release.sh minor       # or auto|patch|major|X.Y.Z
+```
+
+The manual **Release** workflow (Actions ▸ Release ▸ Run workflow) runs the
+same script on CI when you would rather not release from a local clone.
+
 ## Releases
 
 Releases are tagged on `main`, so a tag like
