@@ -19,7 +19,15 @@ permissions:
 
 jobs:
   review:
-    if: github.event.pull_request.draft == false
+    # Skip fork PRs. GitHub withholds secrets from fork-triggered workflows, so
+    # there is no API key to review with, and the token is read-only so the
+    # review could not be posted even if there were. Running anyway would execute
+    # the PR author's copy of this script on our runner and burn minutes for a
+    # job that cannot succeed. `pull_request` (not `pull_request_target`) is
+    # deliberate: _target always runs and does expose secrets to untrusted code.
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
