@@ -51,7 +51,9 @@ struct NoteView: View {
 
 ## Installation
 
-LazyKit follows [semantic versioning](https://semver.org), so pin a release:
+LazyKit follows [semantic versioning](https://semver.org), so pin a release.
+
+**In `Package.swift`:**
 
 ```swift
 dependencies: [
@@ -59,8 +61,11 @@ dependencies: [
 ]
 ```
 
-Or in Xcode, choose **File ▸ Add Package Dependencies…** and enter
-`https://github.com/rafattouqir/LazyKit.git`.
+**In Xcode:**
+
+1. Choose **File ▸ Add Package Dependencies…**
+2. Enter `https://github.com/rafattouqir/LazyKit.git`.
+3. Pick the version you want.
 
 `from:` accepts any release in that minor version. Pin an exact tag with
 `.exact(_:)`, or track unreleased changes with `.branch("main")`.
@@ -68,8 +73,10 @@ Or in Xcode, choose **File ▸ Add Package Dependencies…** and enter
 ## Demo app
 
 `Demo/LazyKitDemo.xcodeproj` exercises every component and every configuration
-documented in `docs/components/`. Open it, pick the `LazyKitDemo` scheme, and
-run it on any iOS Simulator.
+documented in `docs/components/`.
+
+1. Open `Demo/LazyKitDemo.xcodeproj` in Xcode.
+2. Select the `LazyKitDemo` scheme.
 
 ## Development
 
