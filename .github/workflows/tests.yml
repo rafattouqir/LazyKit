@@ -14,13 +14,6 @@ jobs:
         run: swift test
 
   ui-tests:
-    # Disabled for now: the simulator suite is the slow, flaky part of CI.
-    # Re-enable by deleting this one line.
-    #
-    # Note: a skipped job reports as "skipped", not as success. Do not add
-    # `ui-tests` to the required status checks while this is off — a required
-    # check that never reports leaves the PR waiting forever.
-    if: false
     runs-on: macos-latest
     timeout-minutes: 30
     steps:
