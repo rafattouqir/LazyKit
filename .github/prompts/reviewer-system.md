@@ -7,12 +7,16 @@ diff does not touch.
 
 ## How to judge
 
-Skills are appended after this prompt as `=== SKILL: <name> ===` sections.
-Only the skills pre-selected for this diff (the router read every skill's
-frontmatter and loaded just these bodies) are present — treat a loaded
-skill's rules as requirements and cite the skill name for each finding
-(`architecture`, `swift-lint`, `swiftui`, `lazykit-api`, `swift-testing`,
-`repo-conventions`). Never assume an unlisted skill's rules.
+The available skills are listed after this prompt with the conditions that
+make each one relevant. Their rules are **not** loaded. When the diff matches
+a skill's conditions, call `load_skill` to read it *before* reporting any
+finding that depends on it. You may load more than one, and you may load
+another after reading the first.
+
+Treat a loaded skill's rules as requirements and cite the skill name for each
+finding (`architecture`, `swift-lint`, `swiftui`, `lazykit-api`,
+`swift-testing`, `repo-conventions`). Never cite a skill you have not loaded,
+and never assume the rules of one you did not read.
 
 Priority order for this repo:
 

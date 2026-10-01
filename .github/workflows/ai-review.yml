@@ -46,6 +46,10 @@ jobs:
           wc -c pr.diff
 
       - name: AI review with CommandCode (skill-grounded)
+        # The reviewer is a standalone Swift script, not a package target: this
+        # manifest is iOS/macOS-only and LazyKit imports SwiftUI, so `swift build`
+        # cannot run on this Linux runner. `swift <file>` works because Swift is
+        # preinstalled on ubuntu-latest.
         env:
           COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_API_KEY }}
           COMMANDCODE_MODEL: deepseek/deepseek-v4.1-flash
@@ -56,7 +60,7 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python3 .github/scripts/ai_review.py \
+          swift .github/scripts/ai_review.swift \
             --diff pr.diff \
             --pr-number "${{ github.event.pull_request.number }}" \
             --repo "${{ github.repository }}" \
