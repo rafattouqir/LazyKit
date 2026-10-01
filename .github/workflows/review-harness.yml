@@ -1,0 +1,27 @@
+name: Review harness
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  review-harness:
+    # ubuntu-latest, not macos-latest, deliberately. The harness runs the
+    # reviewer under the Linux Swift toolchain, which is the toolchain the
+    # ai-review job actually uses. On Linux, URLSession / URLRequest /
+    # HTTPURLResponse live in FoundationNetworking rather than Foundation, so a
+    # macOS-only harness would miss the one import mistake that compiles locally
+    # and dies in CI. Swift is preinstalled on ubuntu-latest and symlinked into
+    # /usr/local/bin, which is on the default PATH.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      # Cheap, and it turns a toolchain surprise into one diagnosable line
+      # instead of a bare "command not found" from inside the harness.
+      - name: Check the Swift toolchain
+        run: swift --version
+
+      - name: Run the reviewer's behavioural harness
+        run: python3 Scripts/review_harness.py
