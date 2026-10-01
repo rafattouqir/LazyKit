@@ -50,9 +50,16 @@ public struct LazyTextField<Placeholder: View>: View {
     private var textField: some View {
         TextField("", text: $text, prompt: prompt, axis: .vertical)
             .lineLimit(lineLimit)
-            // Clamp in the update that applies the edit: a deferred correction
-            // would let the native editor stack further keystrokes on the
-            // clamped value, which nothing would remove again.
+            // Apply the limit in a later update, not this one.
+            //
+            // The field only re-reads the bound text when the view is
+            // invalidated, so the clamped value has to be observed as a *change*
+            // or it never reaches the native editor. Writing it here collapses
+            // the edit and its correction into one update — the view sees the
+            // same value it already had, is never invalidated, and the editor
+            // keeps the character the limit just discarded. Deferring lets the
+            // over-limit edit land first, so the correction that follows is a
+            // change the field can act on.
             .onChange(of: text) { _, newValue in
                 let acceptedValue = Self.limitedText(
                     newValue,
@@ -63,7 +70,10 @@ public struct LazyTextField<Placeholder: View>: View {
                     return
                 }
 
-                text = acceptedValue
+                let clamped = $text
+                Task { @MainActor in
+                    clamped.wrappedValue = acceptedValue
+                }
             }
             .accessibilityIdentifier(configuration.accessibilityIdentifier)
     }
